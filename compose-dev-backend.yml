@@ -1,0 +1,31 @@
+# compose file for local development
+#
+# build dinocoins-tg docker image - docker-compose -f compose-dev-backend.yml build
+# start dinocoins-tg service - docker-compose -f compose-dev-backend.yml up
+version: "2"
+
+services:
+  dinocoins-tg:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - SKIP_TESTS
+        - TESTS_TIMEOUT
+
+    image: gecec/dinocoins-tg:dev
+    container_name: "dinocoins-tg-dev"
+    hostname: "dinocoins-tg-dev"
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+
+    environment:
+      - DEBUG=true
+      - TELEGRAM_TOKEN
+    volumes:
+      - ./var:/srv/var
