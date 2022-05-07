@@ -9,18 +9,20 @@ import (
 )
 
 const (
-	OpNewTask         = "new_task"
-	OpWalkDog         = "walk_dog"
-	OpBalance         = "balance"
-	OpHistory         = "history"
-	OpGetMoney        = "get_money"
-	OpFinishTask      = "finish_task"
-	OpFreeDish        = "free_dish"
-	OpDirtyDish       = "dirty_dish"
-	OpGoToShop        = "go_to_shop"
-	OpWashFloorInFlat = "wash_floor_in_flat"
-	OpChild           = "child"
-	OpParent          = "parent"
+	OpNewTask           = "new_task"
+	OpWalkDog           = "walk_dog"
+	OpBalance           = "balance"
+	OpHistory           = "history"
+	OpGetMoney          = "get_money"
+	OpFinishTask        = "finish_task"
+	OpFreeDish          = "free_dish"
+	OpDirtyDish         = "dirty_dish"
+	OpGoToShop          = "go_to_shop"
+	OpWashFloorInFlat   = "wash_floor_in_flat"
+	OpChild             = "child"
+	OpParent            = "parent"
+	OpCancelCurrentTask = "cancel_current_task"
+	OpFinishCurrentTask = "finish_current_task"
 )
 
 //var mainKeyboard = tgbotapi.NewInlineKeyboardMarkup(
@@ -87,6 +89,12 @@ var tasksKeyboard = tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardButtonData("Помыть полы в квартире", OpWashFloorInFlat)),
 )
 
+var taskCancelationKeyboard = tgbotapi.NewInlineKeyboardMarkup(
+	tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData("Отмениить текущее задание", OpCancelCurrentTask),
+		tgbotapi.NewInlineKeyboardButtonData("Завершить текущее задание", OpFinishCurrentTask),
+	))
+
 func main() {
 	bot, err := tgbotapi.NewBotAPI(os.Getenv("TELEGRAM_APITOKEN"))
 	if err != nil {
@@ -135,7 +143,19 @@ func main() {
 			case "Зарегистрироваться":
 				msg.ReplyMarkup = childAdultKeyboard
 			case "Новое Задание":
-				msg.ReplyMarkup = tasksKeyboard
+				hasOpenTask, err := db.HasOpenTask(update.Message.From.ID)
+				if err != nil {
+					log.Printf("Unable to find open task %+v", err)
+					msg.Text = "Ошибка"
+				}
+
+				if hasOpenTask {
+					msg.Text = "У тебя есть незавершенное задание. Сначала заверши его или отмени"
+					msg.ReplyMarkup = taskCancelationKeyboard
+				} else {
+					msg.ReplyMarkup = tasksKeyboard
+				}
+
 			case "Баланс динокоинов":
 				db.Balance(update.Message.From.ID)
 			case "Завершить Текущее Задание":
@@ -237,6 +257,20 @@ func main() {
 					msg.Text = "Попроси сначала зарегистрироваться родителя. Отправь ему никнейм Дино @dinocoins_bot"
 				}
 
+			case OpCancelCurrentTask:
+				err := db.CancelCurrentTask(update.CallbackQuery.From.ID)
+				if err != nil {
+					log.Printf("[ERROR] %+v", err)
+					msg.Text = "Ошибка"
+				} else {
+					msg.Text = "Текущее задание отменено"
+				}
+
+			case OpFinishCurrentTask:
+				// find parent
+				// find current transaction
+				// send to parent message: I want to finish task blah-bla
+				msg.Text = "Запрос отправлен родителям. Жди подтверждения"
 			default:
 				log.Println("[WARN] unknown operation %s", update.CallbackData())
 			}

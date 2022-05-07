@@ -88,6 +88,10 @@ func (b *BoltDB) CreateTransaction(op string, userId int64) (transactionId strin
 		return nil
 	})
 
+	if err != nil {
+		return "", err
+	}
+
 	transactionTimeStamp := []byte(t.Timestamp.Format(TSNano))
 
 	err = b.db.Update(func(tx *bbolt.Tx) error {
@@ -106,6 +110,23 @@ func (b *BoltDB) CreateTransaction(op string, userId int64) (transactionId strin
 
 		// Persist bytes to users bucket.
 		return userBkt.Put(transactionTimeStamp, buf)
+	})
+
+	if err != nil {
+		return "", err
+	}
+
+	err = b.db.Update(func(tx *bbolt.Tx) error {
+		// Retrieve the users bucket.
+		// This should be created when the DB is first opened.
+		bkt := tx.Bucket([]byte(currentTransactionName))
+		buf, err := json.Marshal(t)
+		if err != nil {
+			return err
+		}
+
+		// Persist bytes to users bucket.
+		return bkt.Put(itob64(userId), buf)
 	})
 
 	return t.ID, err
@@ -295,6 +316,50 @@ func (b *BoltDB) BindChildToParent(parentId int64, childNickName string) error {
 		if e != nil {
 			return fmt.Errorf("failed to add parent %d to child bucket %s: %w", parentId, bktName, e)
 		}
+
+		return nil
+	})
+
+	return err
+}
+
+func (b *BoltDB) GetCurrentTransaction(userId int64) (Transaction, error) {
+	var t Transaction
+	err := b.db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket([]byte(currentTransactionName))
+
+		v := b.Get(itob64(userId))
+		if v != nil {
+			if err := json.Unmarshal(v, &t); err != nil {
+				return fmt.Errorf("failed to unmarshal: %w", err)
+			}
+		} else {
+			return fmt.Errorf("current transaction not found")
+		}
+
+		return nil
+	})
+
+	return t, err
+}
+
+func (b *BoltDB) HasOpenTask(userId int64) (bool, error) {
+	_, err := b.GetCurrentTransaction(userId)
+	if err != nil && strings.Contains(err.Error(), "not found") {
+		return false, nil
+	}
+
+	if err != nil {
+		return false, err
+	}
+
+	return true, nil
+}
+
+func (b *BoltDB) CancelCurrentTask(userId int64) error {
+	err := b.db.Update(func(tx *bbolt.Tx) error {
+		bkt := tx.Bucket([]byte(currentTransactionName))
+		bkt.Delete(itob64(userId))
 
 		return nil
 	})
