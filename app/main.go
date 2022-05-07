@@ -45,7 +45,10 @@ var registerKeyBoard = tgbotapi.NewReplyKeyboard(
 
 var parentKeyBoard = tgbotapi.NewReplyKeyboard(
 	tgbotapi.NewKeyboardButtonRow(
-		tgbotapi.NewKeyboardButton("Добавить ребенка")),
+		tgbotapi.NewKeyboardButton("Добавить ребенка"),
+		tgbotapi.NewKeyboardButton("Отсоединить ребенка")),
+	tgbotapi.NewKeyboardButtonRow(
+		tgbotapi.NewKeyboardButton("Редактировать стоимость")),
 )
 
 var mainKeyboard = tgbotapi.NewReplyKeyboard(
@@ -118,6 +121,15 @@ func main() {
 			// the text that we received.
 			msg := tgbotapi.NewMessage(update.Message.Chat.ID, update.Message.Text)
 
+			// Child add process
+			// TODO: add additional flat to prevent accidental input with @ prefix
+			if strings.HasPrefix(update.Message.Text, "@") {
+				err := db.BindChildToParent(update.Message.From.ID, update.Message.Text)
+				if err != nil {
+					log.Printf("Unable to show last 10 transactions %+v", err)
+					msg.Text = "Ошибка"
+				}
+			}
 			// If the message was open, add a copy of our numeric keyboard.
 			switch update.Message.Text {
 			case "Зарегистрироваться":
@@ -145,6 +157,9 @@ func main() {
 
 					msg.Text = str
 				}
+
+			case "Добавить ребенка":
+				msg.Text = "Пришли никнейм ребенка (@test)"
 			default:
 				isRegistered, e := db.CheckRegistered(update.Message.From.ID)
 
@@ -189,6 +204,7 @@ func main() {
 			case OpParent:
 				user := User{
 					ID:       update.CallbackQuery.From.ID,
+					ChatID:   update.CallbackQuery.Message.Chat.ID,
 					Nickname: update.CallbackQuery.From.UserName,
 					Type:     PARENT,
 				}
@@ -199,13 +215,14 @@ func main() {
 					msg.ReplyMarkup = parentKeyBoard
 				}
 			case OpChild:
-				hasParent, e := db.HasParent(update.CallbackQuery.From.ID)
+				hasParent, e := db.HasParent(update.CallbackQuery.From.UserName)
 				if e != nil {
 					log.Println("[ERROR] %+v", e)
 				}
 				if hasParent {
 					user := User{
 						ID:       update.CallbackQuery.From.ID,
+						ChatID:   update.CallbackQuery.Message.Chat.ID,
 						Nickname: update.CallbackQuery.From.UserName,
 						Type:     CHILD,
 					}

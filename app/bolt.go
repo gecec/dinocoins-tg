@@ -6,6 +6,7 @@ import (
 	"fmt"
 	bbolt "go.etcd.io/bbolt"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -199,8 +200,20 @@ func (b *BoltDB) load(bkt *bbolt.Bucket, key string, res interface{}) error {
 	return nil
 }
 
-func (b *BoltDB) HasParent(id int64) (bool, error) {
-	return false, nil
+func (b *BoltDB) HasParent(childNickName string) (bool, error) {
+	result := false
+	err := b.db.View(func(tx *bbolt.Tx) error {
+		bktName := "child_@" + childNickName
+		bkt := tx.Bucket([]byte(bktName))
+
+		if bkt != nil {
+			result = true
+		}
+
+		return nil
+	})
+
+	return result, err
 }
 
 func (b *BoltDB) RegisterUser(user User) error {
@@ -222,7 +235,7 @@ func (b *BoltDB) RegisterUser(user User) error {
 
 func (b *BoltDB) CheckRegistered(id int64) (bool, error) {
 	_, err := b.FindUser(id)
-	if strings.Contains(err.Error(), "not found") {
+	if err != nil && strings.Contains(err.Error(), "not found") {
 		return false, nil
 	}
 
@@ -252,4 +265,39 @@ func (b *BoltDB) FindUser(id int64) (User, error) {
 	})
 
 	return user, err
+}
+
+func (b *BoltDB) CreateParentBucket(parentId int64) error {
+	err := b.db.Update(func(tx *bbolt.Tx) error {
+		// create bucket for a user if not exists
+		bktName := "parent_" + strconv.FormatInt(parentId, 10)
+		_, e := tx.CreateBucketIfNotExists([]byte(bktName))
+		if e != nil {
+			return fmt.Errorf("failed to create parent bucket %s: %w", parentId, e)
+		}
+
+		return nil
+	})
+
+	return err
+}
+
+func (b *BoltDB) BindChildToParent(parentId int64, childNickName string) error {
+	err := b.db.Update(func(tx *bbolt.Tx) error {
+		// create bucket for a user if not exists
+		bktName := "child_" + childNickName
+		bkt, e := tx.CreateBucketIfNotExists([]byte(bktName))
+		if e != nil {
+			return fmt.Errorf("failed to create child bucket %s: %w", parentId, e)
+		}
+
+		e = bkt.Put(itob64(parentId), nil)
+		if e != nil {
+			return fmt.Errorf("failed to add parent %d to child bucket %s: %w", parentId, bktName, e)
+		}
+
+		return nil
+	})
+
+	return err
 }
