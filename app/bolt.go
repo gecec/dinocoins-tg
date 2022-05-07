@@ -20,6 +20,8 @@ const (
 	defaultDirtyDish       = 7
 	defaultGoToShop        = 5
 	defaultWashFloorInFlat = 30
+
+	TSNano = "2006-01-02T15:04:05.000000000Z07:00"
 )
 
 type BoltDB struct {
@@ -70,17 +72,27 @@ func (b *BoltDB) CreateTransaction(op string, userId int64) (transactionId strin
 		Operation: op,
 		Cost:      cost,
 		UserId:    userId,
+		Status:    OpenStatus,
 	}
+
+	err = b.db.Update(func(tx *bbolt.Tx) error {
+		// create bucket for a user if not exists
+		_, e := tx.CreateBucketIfNotExists(itob64(userId))
+		if e != nil {
+			return fmt.Errorf("failed to create user bucket %s: %w", userId, e)
+		}
+
+		return nil
+	})
+
+	transactionTimeStamp := []byte(t.Timestamp.Format(TSNano))
 
 	err = b.db.Update(func(tx *bbolt.Tx) error {
 		// Retrieve the users bucket.
 		// This should be created when the DB is first opened.
-		b := tx.Bucket([]byte(transactionsBucketName))
+		userBkt := tx.Bucket(itob64(userId))
 
-		// Generate ID for the user.
-		// This returns an error only if the Tx is closed or not writeable.
-		// That can't happen in an Update() call so I ignore the error check.
-		id, _ := b.NextSequence()
+		id, _ := userBkt.NextSequence()
 		t.ID = string(id)
 
 		// Marshal user data into bytes.
@@ -90,7 +102,7 @@ func (b *BoltDB) CreateTransaction(op string, userId int64) (transactionId strin
 		}
 
 		// Persist bytes to users bucket.
-		return b.Put([]byte(t.ID), buf)
+		return userBkt.Put(transactionTimeStamp, buf)
 	})
 
 	return t.ID, err
@@ -108,7 +120,7 @@ func (b *BoltDB) StoreCurrentTransactionId(transactionId string, userId int64) e
 func (b *BoltDB) GetOperationCost(op string) (int, error) {
 	var cost int
 	err := b.db.View(func(tx *bbolt.Tx) error {
-		b := tx.Bucket([]byte(transactionsBucketName))
+		b := tx.Bucket([]byte(costsBucketName))
 		v := b.Get([]byte(op))
 		cost = int(binary.BigEndian.Uint64(v))
 		return nil
@@ -130,6 +142,36 @@ func (b *BoltDB) Balance(id int64) (int, error) {
 	return result, err
 }
 
+func (b *BoltDB) ShowLastNTransactions(id int64, limit int) (transactions []Transaction, err error) {
+	transactions = []Transaction{}
+
+	err = b.db.View(func(tx *bbolt.Tx) error {
+		// Assume bucket exists and has keys
+		userBkt := tx.Bucket(itob64(id))
+
+		bktStats := userBkt.Stats()
+
+		log.Println("[DEBUG] number of keys ", bktStats.KeyN)
+		c := userBkt.Cursor()
+
+		for k, v := c.Last(); k != nil; k, v = c.Prev() {
+			transaction := Transaction{}
+			if err := json.Unmarshal(v, &transaction); err != nil {
+				return fmt.Errorf("failed to unmarshal: %w", err)
+			}
+
+			transactions = append(transactions, transaction)
+			if len(transactions) >= limit {
+				break
+			}
+		}
+
+		return nil
+	})
+
+	return transactions, err
+}
+
 // itob returns an 8-byte big endian representation of v.
 func itob(v int) []byte {
 	b := make([]byte, 8)
@@ -141,4 +183,30 @@ func itob64(v int64) []byte {
 	b := make([]byte, 8)
 	binary.BigEndian.PutUint64(b, uint64(v))
 	return b
+}
+
+func (b *BoltDB) load(bkt *bbolt.Bucket, key string, res interface{}) error {
+	value := bkt.Get([]byte(key))
+	if value == nil {
+		return fmt.Errorf("no value for %s", key)
+	}
+
+	if err := json.Unmarshal(value, &res); err != nil {
+		return fmt.Errorf("failed to unmarshal: %w", err)
+	}
+	return nil
+}
+
+func (b *BoltDB) HasParent(id int64) (bool, error) {
+	return false, nil
+}
+
+func (b *BoltDB) RegisterUser(user User) error {
+	return nil
+
+}
+
+func (b *BoltDB) CheckRegistered(id int64) (bool, error) {
+	return false, nil
+
 }

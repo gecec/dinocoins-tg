@@ -6,6 +6,7 @@ const (
 	OpenStatus      = "OPEN"
 	CompletedStatus = "COMPLETED"
 	CanceledStatus  = "CANCELED"
+	ApprovedStatus  = "APPROVED"
 )
 
 type Transaction struct {

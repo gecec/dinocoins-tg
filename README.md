@@ -7,3 +7,8 @@
 
 
 Хранить все в бд - например в болтдб
+
+store transactions by timestamp
+userid->[transactions]
+
+transactionid->transaction
