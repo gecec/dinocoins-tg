@@ -11,7 +11,7 @@ const (
 
 type Transaction struct {
 	ID        string    `json:"id" bson:"_id"`
-	Timestamp time.Time `json:"time" bson:"time"`
+	Timestamp time.Time `json:"timestamp" bson:"time"`
 	Operation string    `json:"operation"`
 	Cost      int       `json:"cost"`
 	UserId    int64     `json:"user_id"`

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	bbolt "go.etcd.io/bbolt"
 	"log"
+	"strings"
 	"time"
 )
 
@@ -13,6 +14,7 @@ const (
 	transactionsBucketName = "transactions"
 	costsBucketName        = "costs"
 	balanceBucketName      = "balance"
+	usersBucketName        = "users"
 	currentTransactionName = "current_transaction"
 
 	defaultWalkDogCost     = 10
@@ -31,7 +33,7 @@ type BoltDB struct {
 func NewBoltDB(fileName string) (*BoltDB, error) {
 	log.Printf("[INFO] creating bolt store")
 	db, err := bbolt.Open(fileName, 0o600, nil)
-	buckets := []string{transactionsBucketName, costsBucketName}
+	buckets := []string{transactionsBucketName, costsBucketName, balanceBucketName, usersBucketName}
 
 	err = db.Update(func(tx *bbolt.Tx) error {
 		for _, bktName := range buckets {
@@ -202,11 +204,52 @@ func (b *BoltDB) HasParent(id int64) (bool, error) {
 }
 
 func (b *BoltDB) RegisterUser(user User) error {
-	return nil
+	log.Printf("[INFO] user %s registration", user.Nickname)
+	err := b.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket([]byte(usersBucketName))
 
+		user.RegistrationTS = time.Now()
+		buf, err := json.Marshal(user)
+		if err != nil {
+			return err
+		}
+
+		return b.Put(itob64(user.ID), buf)
+	})
+
+	return err
 }
 
 func (b *BoltDB) CheckRegistered(id int64) (bool, error) {
-	return false, nil
+	_, err := b.FindUser(id)
+	if strings.Contains(err.Error(), "not found") {
+		return false, nil
+	}
 
+	if err != nil {
+		return false, err
+	}
+
+	return true, nil
+}
+
+func (b *BoltDB) FindUser(id int64) (User, error) {
+	var user User
+
+	err := b.db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket([]byte(usersBucketName))
+
+		v := b.Get(itob64(id))
+		if v != nil {
+			if err := json.Unmarshal(v, &user); err != nil {
+				return fmt.Errorf("failed to unmarshal: %w", err)
+			}
+		} else {
+			return fmt.Errorf("user not found")
+		}
+
+		return nil
+	})
+
+	return user, err
 }

@@ -20,7 +20,7 @@ const (
 	OpGoToShop        = "go_to_shop"
 	OpWashFloorInFlat = "wash_floor_in_flat"
 	OpChild           = "child"
-	OpAdult           = "adult"
+	OpParent          = "parent"
 )
 
 //var mainKeyboard = tgbotapi.NewInlineKeyboardMarkup(
@@ -43,6 +43,11 @@ var registerKeyBoard = tgbotapi.NewReplyKeyboard(
 		tgbotapi.NewKeyboardButton("Зарегистрироваться")),
 )
 
+var parentKeyBoard = tgbotapi.NewReplyKeyboard(
+	tgbotapi.NewKeyboardButtonRow(
+		tgbotapi.NewKeyboardButton("Добавить ребенка")),
+)
+
 var mainKeyboard = tgbotapi.NewReplyKeyboard(
 	tgbotapi.NewKeyboardButtonRow(
 		tgbotapi.NewKeyboardButton("Новое Задание"),
@@ -61,7 +66,7 @@ var mainKeyboard = tgbotapi.NewReplyKeyboard(
 var childAdultKeyboard = tgbotapi.NewInlineKeyboardMarkup(
 	tgbotapi.NewInlineKeyboardRow(
 		tgbotapi.NewInlineKeyboardButtonData("Ребенок", OpChild),
-		tgbotapi.NewInlineKeyboardButtonData("Взрослый", OpAdult),
+		tgbotapi.NewInlineKeyboardButtonData("Взрослый", OpParent),
 	))
 
 var tasksKeyboard = tgbotapi.NewInlineKeyboardMarkup(
@@ -90,7 +95,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	bot.Debug = true
+	bot.Debug = false
 
 	// Create a new UpdateConfig struct with an offset of 0. Offsets are used
 	// to make sure Telegram knows we've handled previous values and we don't
@@ -148,7 +153,17 @@ func main() {
 					msg.Text = "Ошибка"
 				} else {
 					if isRegistered {
-						msg.ReplyMarkup = mainKeyboard
+						user, e := db.FindUser(update.Message.From.ID)
+						if e != nil {
+							log.Printf("[ERROR] %+v", e)
+							msg.Text = "Ошибка"
+						} else {
+							if user.Type == PARENT {
+								msg.ReplyMarkup = parentKeyBoard
+							} else {
+								msg.ReplyMarkup = mainKeyboard
+							}
+						}
 					} else {
 						msg.ReplyMarkup = registerKeyBoard
 					}
@@ -166,26 +181,40 @@ func main() {
 			case OpNewTask:
 				msg.ReplyMarkup = tasksKeyboard
 			case OpWalkDog, OpFreeDish, OpDirtyDish, OpGoToShop, OpWashFloorInFlat:
-				_, e := db.CreateTransaction(update.CallbackData(), update.CallbackQuery.Message.From.ID)
+				_, e := db.CreateTransaction(update.CallbackData(), update.CallbackQuery.From.ID)
 				if e != nil {
 					log.Printf("Unable to create transaction %+v", e)
 				}
 
+			case OpParent:
+				user := User{
+					ID:       update.CallbackQuery.From.ID,
+					Nickname: update.CallbackQuery.From.UserName,
+					Type:     PARENT,
+				}
+				e := db.RegisterUser(user)
+				if e != nil {
+					log.Println("[ERROR] %+v", e)
+				} else {
+					msg.ReplyMarkup = parentKeyBoard
+				}
 			case OpChild:
-				hasParent, e := db.HasParent(update.CallbackQuery.Message.From.ID)
+				hasParent, e := db.HasParent(update.CallbackQuery.From.ID)
 				if e != nil {
 					log.Println("[ERROR] %+v", e)
 				}
 				if hasParent {
 					user := User{
-						ID:       update.CallbackQuery.Message.From.ID,
-						Nickname: update.CallbackQuery.Message.From.UserName,
+						ID:       update.CallbackQuery.From.ID,
+						Nickname: update.CallbackQuery.From.UserName,
 						Type:     CHILD,
 					}
 
 					e := db.RegisterUser(user)
 					if e != nil {
 						log.Println("[ERROR] %+v", e)
+					} else {
+						msg.ReplyMarkup = mainKeyboard
 					}
 				} else {
 					msg.Text = "Попроси сначала зарегистрироваться родителя. Отправь ему никнейм Дино @dinocoins_bot"
