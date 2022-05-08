@@ -359,10 +359,68 @@ func (b *BoltDB) HasOpenTask(userId int64) (bool, error) {
 func (b *BoltDB) CancelCurrentTask(userId int64) error {
 	err := b.db.Update(func(tx *bbolt.Tx) error {
 		bkt := tx.Bucket([]byte(currentTransactionName))
-		bkt.Delete(itob64(userId))
+
+		var curTransaction Transaction
+
+		v := bkt.Get(itob64(userId))
+		if v != nil {
+			if err := json.Unmarshal(v, &curTransaction); err != nil {
+				return fmt.Errorf("failed to unmarshal: %w", err)
+			}
+
+			// TODO: extract to separate func
+			// set status of current transaction to CANCELED
+			trsBkt := tx.Bucket([]byte(transactionsBucketName))
+			ts := curTransaction.Timestamp.Format(TSNano)
+			val := trsBkt.Get([]byte(ts))
+
+			if val != nil {
+				var t Transaction
+				if err := json.Unmarshal(val, &t); err != nil {
+					return fmt.Errorf("failed to unmarshal: %w", err)
+				}
+
+				t.Status = CanceledStatus
+
+				buf, err := json.Marshal(t)
+				if err != nil {
+					return err
+				}
+
+				e := trsBkt.Put([]byte(ts), buf)
+
+				if e != nil {
+					return fmt.Errorf("failed to update transaction status: %w", e)
+				}
+			}
+		}
+
+		e := bkt.Delete(itob64(userId))
+		if e != nil {
+			return fmt.Errorf("failed to remove current transaction: %w", e)
+		}
 
 		return nil
 	})
 
 	return err
+}
+
+func (b *BoltDB) FindParentIdByChild(childNickName string) (parentId int64, err error) {
+	err = b.db.View(func(tx *bbolt.Tx) error {
+		bktName := "child_@" + childNickName
+		bkt := tx.Bucket([]byte(bktName))
+
+		_, v := bkt.Cursor().First()
+
+		if v == nil {
+			return fmt.Errorf("parent for a child [%s] not found", childNickName)
+		}
+
+		parentId = int64(binary.BigEndian.Uint64(v))
+
+		return nil
+	})
+
+	return parentId, err
 }

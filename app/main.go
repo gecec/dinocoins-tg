@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"log"
 	"os"
@@ -271,6 +272,30 @@ func main() {
 				// find current transaction
 				// send to parent message: I want to finish task blah-bla
 				msg.Text = "Запрос отправлен родителям. Жди подтверждения"
+				parentId, err := db.FindParentIdByChild(update.CallbackQuery.From.UserName)
+				if err != nil {
+					log.Printf("[ERROR] %+v", err)
+					msg.Text = "Ошибка"
+				} else {
+					parent, err := db.FindUser(parentId)
+					if err != nil {
+						log.Printf("[ERROR] %+v", err)
+						msg.Text = "Ошибка"
+					} else {
+						t, err := db.GetCurrentTransaction(update.CallbackQuery.From.ID)
+						if err != nil {
+							log.Printf("[ERROR] %+v", err)
+							msg.Text = "Ошибка"
+						} else {
+							text := fmt.Sprintf("%s закончил задание %s. Подтвердите",
+								update.CallbackQuery.From.UserName, t.Operation)
+							msgForParent := tgbotapi.NewMessage(parent.ChatID, text)
+							if _, err := bot.Send(msgForParent); err != nil {
+								panic(err)
+							}
+						}
+					}
+				}
 			default:
 				log.Println("[WARN] unknown operation %s", update.CallbackData())
 			}
