@@ -4,26 +4,10 @@ import (
 	"fmt"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"log"
+	"main/store"
 	"os"
 	"strconv"
 	"strings"
-)
-
-const (
-	OpNewTask           = "new_task"
-	OpWalkDog           = "walk_dog"
-	OpBalance           = "balance"
-	OpHistory           = "history"
-	OpGetMoney          = "get_money"
-	OpFinishTask        = "finish_task"
-	OpFreeDish          = "free_dish"
-	OpDirtyDish         = "dirty_dish"
-	OpGoToShop          = "go_to_shop"
-	OpWashFloorInFlat   = "wash_floor_in_flat"
-	OpChild             = "child"
-	OpParent            = "parent"
-	OpCancelCurrentTask = "cancel_current_task"
-	OpFinishCurrentTask = "finish_current_task"
 )
 
 //var mainKeyboard = tgbotapi.NewInlineKeyboardMarkup(
@@ -51,7 +35,8 @@ var parentKeyBoard = tgbotapi.NewReplyKeyboard(
 		tgbotapi.NewKeyboardButton("Добавить ребенка"),
 		tgbotapi.NewKeyboardButton("Отсоединить ребенка")),
 	tgbotapi.NewKeyboardButtonRow(
-		tgbotapi.NewKeyboardButton("Редактировать стоимость")),
+		tgbotapi.NewKeyboardButton("Редактировать стоимость"),
+		tgbotapi.NewKeyboardButton("Подтвердить задание")),
 )
 
 var mainKeyboard = tgbotapi.NewReplyKeyboard(
@@ -71,29 +56,29 @@ var mainKeyboard = tgbotapi.NewReplyKeyboard(
 
 var childAdultKeyboard = tgbotapi.NewInlineKeyboardMarkup(
 	tgbotapi.NewInlineKeyboardRow(
-		tgbotapi.NewInlineKeyboardButtonData("Ребенок", OpChild),
-		tgbotapi.NewInlineKeyboardButtonData("Взрослый", OpParent),
+		tgbotapi.NewInlineKeyboardButtonData("Ребенок", store.OpChild),
+		tgbotapi.NewInlineKeyboardButtonData("Взрослый", store.OpParent),
 	))
 
 var tasksKeyboard = tgbotapi.NewInlineKeyboardMarkup(
 	tgbotapi.NewInlineKeyboardRow(
-		tgbotapi.NewInlineKeyboardButtonData("Погулять с собакой", OpWalkDog)),
+		tgbotapi.NewInlineKeyboardButtonData("Погулять с собакой", store.OpWalkDog)),
 	tgbotapi.NewInlineKeyboardRow(
-		tgbotapi.NewInlineKeyboardButtonData("Разгрузить посудомойку", OpFreeDish)),
+		tgbotapi.NewInlineKeyboardButtonData("Разгрузить посудомойку", store.OpFreeDish)),
 
 	tgbotapi.NewInlineKeyboardRow(
-		tgbotapi.NewInlineKeyboardButtonData("Загрузить посудомойку", OpDirtyDish)),
+		tgbotapi.NewInlineKeyboardButtonData("Загрузить посудомойку", store.OpDirtyDish)),
 
 	tgbotapi.NewInlineKeyboardRow(
-		tgbotapi.NewInlineKeyboardButtonData("Сходить в магазин", OpGoToShop)),
+		tgbotapi.NewInlineKeyboardButtonData("Сходить в магазин", store.OpGoToShop)),
 	tgbotapi.NewInlineKeyboardRow(
-		tgbotapi.NewInlineKeyboardButtonData("Помыть полы в квартире", OpWashFloorInFlat)),
+		tgbotapi.NewInlineKeyboardButtonData("Помыть полы в квартире", store.OpWashFloorInFlat)),
 )
 
 var taskCancelationKeyboard = tgbotapi.NewInlineKeyboardMarkup(
 	tgbotapi.NewInlineKeyboardRow(
-		tgbotapi.NewInlineKeyboardButtonData("Отмениить текущее задание", OpCancelCurrentTask),
-		tgbotapi.NewInlineKeyboardButtonData("Завершить текущее задание", OpFinishCurrentTask),
+		tgbotapi.NewInlineKeyboardButtonData("Отмениить текущее задание", store.OpCancelCurrentTask),
+		tgbotapi.NewInlineKeyboardButtonData("Завершить текущее задание", store.OpFinishCurrentTask),
 	))
 
 func main() {
@@ -102,7 +87,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	db, err := NewBoltDB("dinocoins.db")
+	db, err := store.NewBoltDB("dinocoins.db")
+	if err != nil {
+		os.Exit(1)
+	}
+
+	am, err := store.NewActionManager(db)
 	if err != nil {
 		os.Exit(1)
 	}
@@ -135,10 +125,15 @@ func main() {
 			if strings.HasPrefix(update.Message.Text, "@") {
 				err := db.BindChildToParent(update.Message.From.ID, update.Message.Text)
 				if err != nil {
-					log.Printf("Unable to show last 10 transactions %+v", err)
+					log.Printf("Unable to bind a child to parent %+v", err)
 					msg.Text = "Ошибка"
 				}
 			}
+
+			if strings.Contains(update.Message.Text, "запрос на подтверждение задания") {
+				log.Printf("Accept or Decline")
+			}
+
 			// If the message was open, add a copy of our numeric keyboard.
 			switch update.Message.Text {
 			case "Зарегистрироваться":
@@ -158,9 +153,23 @@ func main() {
 				}
 
 			case "Баланс динокоинов":
-				db.Balance(update.Message.From.ID)
+				balance, _ := db.Balance(update.Message.From.ID)
+				msg.Text = strconv.Itoa(balance) + " dinocoins"
 			case "Завершить Текущее Задание":
-				msg.Text = "Запрос отправлен родителям. Жди подтверждения"
+				childId := update.Message.From.ID
+				childName := update.Message.From.UserName
+				op, parentChatid, err := am.SendRequestToCompleteCurrentTask(childId, childName)
+				if err != nil {
+					log.Printf("Unable to complete task %+v", err)
+					msg.Text = "Ошибка. Невозможно завершить задание"
+				} else {
+					msgForParent := tgbotapi.NewMessage(parentChatid,
+						"Ребенок с ником "+childName+" отправил запрос на подтверждение задания "+op)
+					if _, err = bot.Send(msgForParent); err != nil {
+						panic(err)
+					}
+					msg.Text = "Запрос отправлен родителям. Жди подтверждения"
+				}
 			case "История заданий":
 				transactions, e := db.ShowLastNTransactions(update.Message.From.ID, 30)
 				if e != nil {
@@ -169,7 +178,7 @@ func main() {
 				} else {
 					var str string
 					for _, t := range transactions {
-						str = strings.Join([]string{str, t.Operation, t.Timestamp.Format(TSNano), t.Status, strconv.Itoa(t.Cost), "\n"}, "\t")
+						str = strings.Join([]string{str, t.Operation, t.Timestamp.Format(store.TSNano), t.Status, strconv.Itoa(t.Cost), "\n"}, "\t")
 					}
 
 					if str == "" {
@@ -181,6 +190,18 @@ func main() {
 
 			case "Добавить ребенка":
 				msg.Text = "Пришли никнейм ребенка (@test)"
+			case "Подтвердить задание":
+				// find list of children and build kbd
+				children, _ := db.FindChildren(update.Message.From.ID)
+				kbdWithChildrenList := tgbotapi.NewInlineKeyboardMarkup(tgbotapi.NewInlineKeyboardRow())
+
+				for _, child := range children {
+					kbdWithChildrenList.InlineKeyboard[0] = append(kbdWithChildrenList.InlineKeyboard[0],
+						tgbotapi.NewInlineKeyboardButtonData(child, "cmd"+child))
+				}
+
+				msg.Text = "Выбери ребенка, которому нужно подтвердить задание"
+				msg.ReplyMarkup = kbdWithChildrenList
 			default:
 				isRegistered, e := db.CheckRegistered(update.Message.From.ID)
 
@@ -194,7 +215,7 @@ func main() {
 							log.Printf("[ERROR] %+v", e)
 							msg.Text = "Ошибка"
 						} else {
-							if user.Type == PARENT {
+							if user.Type == store.PARENT {
 								msg.ReplyMarkup = parentKeyBoard
 							} else {
 								msg.ReplyMarkup = mainKeyboard
@@ -214,20 +235,20 @@ func main() {
 			msg := tgbotapi.NewMessage(update.CallbackQuery.Message.Chat.ID, "test")
 
 			switch update.CallbackData() {
-			case OpNewTask:
+			case store.OpNewTask:
 				msg.ReplyMarkup = tasksKeyboard
-			case OpWalkDog, OpFreeDish, OpDirtyDish, OpGoToShop, OpWashFloorInFlat:
+			case store.OpWalkDog, store.OpFreeDish, store.OpDirtyDish, store.OpGoToShop, store.OpWashFloorInFlat:
 				_, e := db.CreateTransaction(update.CallbackData(), update.CallbackQuery.From.ID)
 				if e != nil {
 					log.Printf("Unable to create transaction %+v", e)
 				}
 
-			case OpParent:
-				user := User{
+			case store.OpParent:
+				user := store.User{
 					ID:       update.CallbackQuery.From.ID,
 					ChatID:   update.CallbackQuery.Message.Chat.ID,
 					Nickname: update.CallbackQuery.From.UserName,
-					Type:     PARENT,
+					Type:     store.PARENT,
 				}
 				e := db.RegisterUser(user)
 				if e != nil {
@@ -235,17 +256,17 @@ func main() {
 				} else {
 					msg.ReplyMarkup = parentKeyBoard
 				}
-			case OpChild:
+			case store.OpChild:
 				hasParent, e := db.HasParent(update.CallbackQuery.From.UserName)
 				if e != nil {
 					log.Println("[ERROR] %+v", e)
 				}
 				if hasParent {
-					user := User{
+					user := store.User{
 						ID:       update.CallbackQuery.From.ID,
 						ChatID:   update.CallbackQuery.Message.Chat.ID,
 						Nickname: update.CallbackQuery.From.UserName,
-						Type:     CHILD,
+						Type:     store.CHILD,
 					}
 
 					e := db.RegisterUser(user)
@@ -258,7 +279,7 @@ func main() {
 					msg.Text = "Попроси сначала зарегистрироваться родителя. Отправь ему никнейм Дино @dinocoins_bot"
 				}
 
-			case OpCancelCurrentTask:
+			case store.OpCancelCurrentTask:
 				err := db.CancelCurrentTask(update.CallbackQuery.From.ID)
 				if err != nil {
 					log.Printf("[ERROR] %+v", err)
@@ -267,12 +288,12 @@ func main() {
 					msg.Text = "Текущее задание отменено"
 				}
 
-			case OpFinishCurrentTask:
+			case store.OpFinishCurrentTask:
 				// find parent
 				// find current transaction
 				// send to parent message: I want to finish task blah-bla
 				msg.Text = "Запрос отправлен родителям. Жди подтверждения"
-				parentId, err := db.FindParentIdByChild(update.CallbackQuery.From.UserName)
+				parentId, err := db.FindParentIdByChildNickName(update.CallbackQuery.From.UserName)
 				if err != nil {
 					log.Printf("[ERROR] %+v", err)
 					msg.Text = "Ошибка"
@@ -297,7 +318,20 @@ func main() {
 					}
 				}
 			default:
-				log.Println("[WARN] unknown operation %s", update.CallbackData())
+				if strings.Contains(update.CallbackData(), "cmd@") {
+					childNickName := update.CallbackData()[4:]
+					childUser, err := db.FindUserByNickname(childNickName)
+					if childUser.ID == 0 {
+						log.Printf("Unable to find a child with nickname %s %+v", childNickName, err)
+					} else {
+						err = am.ConfirmTransaction(childUser.ID)
+						if err != nil {
+							log.Printf("Unable to confirm transaction %+v", err)
+						}
+					}
+				} else {
+					log.Println("[WARN] unknown operation %s", update.CallbackData())
+				}
 			}
 			// Respond to the callback query, telling Telegram to show the user
 			// a message with the data received.

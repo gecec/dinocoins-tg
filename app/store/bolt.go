@@ -1,4 +1,4 @@
-package main
+package store
 
 import (
 	"encoding/binary"
@@ -12,11 +12,10 @@ import (
 )
 
 const (
-	transactionsBucketName = "transactions"
-	costsBucketName        = "costs"
-	balanceBucketName      = "balance"
-	usersBucketName        = "users"
-	currentTransactionName = "current_transaction"
+	costsBucketName        = "costs"               // bucket with operation costs, operation -> cost
+	balanceBucketName      = "balance"             // userId -> balance
+	usersBucketName        = "users"               // userId -> user struct
+	currentTransactionName = "current_transaction" // userId -> transaction struct
 
 	defaultWalkDogCost     = 10
 	defaultFreeDish        = 5
@@ -27,14 +26,35 @@ const (
 	TSNano = "2006-01-02T15:04:05.000000000Z07:00"
 )
 
+const (
+	OpNewTask           = "new_task"
+	OpWalkDog           = "walk_dog"
+	OpBalance           = "balance"
+	OpHistory           = "history"
+	OpGetMoney          = "get_money"
+	OpFinishTask        = "finish_task"
+	OpFreeDish          = "free_dish"
+	OpDirtyDish         = "dirty_dish"
+	OpGoToShop          = "go_to_shop"
+	OpWashFloorInFlat   = "wash_floor_in_flat"
+	OpChild             = "child"
+	OpParent            = "parent"
+	OpCancelCurrentTask = "cancel_current_task"
+	OpFinishCurrentTask = "finish_current_task"
+)
+
+// transaction list is stored in separate bucket for each user, bucketname = userId, timestamp -> transaction
+// parent_<userId> - bucket with a list of parent children
+// "child_@" + childNickName - contains list of parents, parentId->nil
 type BoltDB struct {
 	db *bbolt.DB
 }
 
+// NewBoltDB creates or opens DB, and creates buckets
 func NewBoltDB(fileName string) (*BoltDB, error) {
 	log.Printf("[INFO] creating bolt store")
 	db, err := bbolt.Open(fileName, 0o600, nil)
-	buckets := []string{transactionsBucketName, costsBucketName, balanceBucketName, usersBucketName}
+	buckets := []string{costsBucketName, balanceBucketName, usersBucketName, currentTransactionName}
 
 	err = db.Update(func(tx *bbolt.Tx) error {
 		for _, bktName := range buckets {
@@ -64,10 +84,10 @@ func NewBoltDB(fileName string) (*BoltDB, error) {
 	return &BoltDB{db: db}, nil
 }
 
-func (b *BoltDB) CreateTransaction(op string, userId int64) (transactionId string, err error) {
+func (b *BoltDB) CreateTransaction(op string, userId int64) (transaction *Transaction, err error) {
 	cost, err := b.GetOperationCost(op)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	t := Transaction{
@@ -79,17 +99,17 @@ func (b *BoltDB) CreateTransaction(op string, userId int64) (transactionId strin
 	}
 
 	err = b.db.Update(func(tx *bbolt.Tx) error {
-		// create bucket for a user if not exists
+		// create bucket for a user if not exists, bucket keeps list of user transactions
 		_, e := tx.CreateBucketIfNotExists(itob64(userId))
 		if e != nil {
-			return fmt.Errorf("failed to create user bucket %s: %w", userId, e)
+			return fmt.Errorf("failed to create user bucket %d: %w", userId, e)
 		}
 
 		return nil
 	})
 
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	transactionTimeStamp := []byte(t.Timestamp.Format(TSNano))
@@ -100,7 +120,7 @@ func (b *BoltDB) CreateTransaction(op string, userId int64) (transactionId strin
 		userBkt := tx.Bucket(itob64(userId))
 
 		id, _ := userBkt.NextSequence()
-		t.ID = string(id)
+		t.ID = fmt.Sprint(id)
 
 		// Marshal user data into bytes.
 		buf, err := json.Marshal(t)
@@ -113,7 +133,7 @@ func (b *BoltDB) CreateTransaction(op string, userId int64) (transactionId strin
 	})
 
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	err = b.db.Update(func(tx *bbolt.Tx) error {
@@ -129,16 +149,7 @@ func (b *BoltDB) CreateTransaction(op string, userId int64) (transactionId strin
 		return bkt.Put(itob64(userId), buf)
 	})
 
-	return t.ID, err
-}
-
-func (b *BoltDB) StoreCurrentTransactionId(transactionId string, userId int64) error {
-	err := b.db.Update(func(tx *bbolt.Tx) error {
-		b := tx.Bucket([]byte(currentTransactionName))
-		return b.Put(itob64(userId), []byte(transactionId))
-	})
-
-	return err
+	return &t, err
 }
 
 func (b *BoltDB) GetOperationCost(op string) (int, error) {
@@ -159,7 +170,29 @@ func (b *BoltDB) Balance(id int64) (int, error) {
 		b := tx.Bucket([]byte(balanceBucketName))
 
 		v := b.Get(itob64(id))
-		result = int(binary.BigEndian.Uint64(v))
+		if v != nil {
+			result = int(binary.BigEndian.Uint64(v))
+		}
+		return nil
+	})
+
+	return result, err
+}
+
+func (b *BoltDB) ChangeBalance(userId int64, delta int) (result int, err error) {
+	result = delta
+	err = b.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket([]byte(balanceBucketName))
+		v := b.Get(itob64(userId))
+
+		if v == nil {
+			b.Put(itob64(userId), itob(delta))
+		} else {
+			val := int(binary.BigEndian.Uint64(v)) + delta
+			result = val
+			b.Put(itob64(userId), itob(val))
+		}
+
 		return nil
 	})
 
@@ -251,6 +284,10 @@ func (b *BoltDB) RegisterUser(user User) error {
 		return b.Put(itob64(user.ID), buf)
 	})
 
+	if user.Type == PARENT {
+		err = b.CreateParentBucket(user.ID)
+	}
+
 	return err
 }
 
@@ -294,7 +331,7 @@ func (b *BoltDB) CreateParentBucket(parentId int64) error {
 		bktName := "parent_" + strconv.FormatInt(parentId, 10)
 		_, e := tx.CreateBucketIfNotExists([]byte(bktName))
 		if e != nil {
-			return fmt.Errorf("failed to create parent bucket %s: %w", parentId, e)
+			return fmt.Errorf("failed to create parent bucket %d: %w", parentId, e)
 		}
 
 		return nil
@@ -304,18 +341,28 @@ func (b *BoltDB) CreateParentBucket(parentId int64) error {
 }
 
 func (b *BoltDB) BindChildToParent(parentId int64, childNickName string) error {
+	// create and put child -> parent relation
 	err := b.db.Update(func(tx *bbolt.Tx) error {
 		// create bucket for a user if not exists
 		bktName := "child_" + childNickName
 		bkt, e := tx.CreateBucketIfNotExists([]byte(bktName))
 		if e != nil {
-			return fmt.Errorf("failed to create child bucket %s: %w", parentId, e)
+			return fmt.Errorf("failed to create child bucket %d: %w", parentId, e)
 		}
 
 		e = bkt.Put(itob64(parentId), nil)
 		if e != nil {
 			return fmt.Errorf("failed to add parent %d to child bucket %s: %w", parentId, bktName, e)
 		}
+
+		return nil
+	})
+
+	// add child to parent list
+	err = b.db.Update(func(tx *bbolt.Tx) error {
+		prtBktName := "parent_" + strconv.FormatInt(parentId, 10)
+		prtBkt := tx.Bucket([]byte(prtBktName))
+		prtBkt.Put([]byte(childNickName), nil)
 
 		return nil
 	})
@@ -367,37 +414,15 @@ func (b *BoltDB) CancelCurrentTask(userId int64) error {
 			if err := json.Unmarshal(v, &curTransaction); err != nil {
 				return fmt.Errorf("failed to unmarshal: %w", err)
 			}
-
-			// TODO: extract to separate func
-			// set status of current transaction to CANCELED
-			trsBkt := tx.Bucket([]byte(transactionsBucketName))
-			ts := curTransaction.Timestamp.Format(TSNano)
-			val := trsBkt.Get([]byte(ts))
-
-			if val != nil {
-				var t Transaction
-				if err := json.Unmarshal(val, &t); err != nil {
-					return fmt.Errorf("failed to unmarshal: %w", err)
-				}
-
-				t.Status = CanceledStatus
-
-				buf, err := json.Marshal(t)
-				if err != nil {
-					return err
-				}
-
-				e := trsBkt.Put([]byte(ts), buf)
-
-				if e != nil {
-					return fmt.Errorf("failed to update transaction status: %w", e)
-				}
-			}
 		}
 
 		e := bkt.Delete(itob64(userId))
 		if e != nil {
 			return fmt.Errorf("failed to remove current transaction: %w", e)
+		}
+
+		if err := b.UpdateTransactionStatus(curTransaction, CanceledStatus, userId); err != nil {
+			return fmt.Errorf("failed to update transaction status: %w", err)
 		}
 
 		return nil
@@ -406,21 +431,101 @@ func (b *BoltDB) CancelCurrentTask(userId int64) error {
 	return err
 }
 
-func (b *BoltDB) FindParentIdByChild(childNickName string) (parentId int64, err error) {
+func (b *BoltDB) UpdateTransactionStatus(t Transaction, newStatus string, userId int64) error {
+	err := b.db.Update(func(tx *bbolt.Tx) error {
+		trsBkt := tx.Bucket(itob64(userId))
+		ts := t.Timestamp.Format(TSNano)
+		val := trsBkt.Get([]byte(ts))
+
+		if val != nil {
+			var t Transaction
+			if err := json.Unmarshal(val, &t); err != nil {
+				return fmt.Errorf("failed to unmarshal: %w", err)
+			}
+
+			t.Status = newStatus
+
+			buf, err := json.Marshal(t)
+			if err != nil {
+				return err
+			}
+
+			e := trsBkt.Put([]byte(ts), buf)
+
+			if e != nil {
+				return fmt.Errorf("failed to update transaction status: %w", e)
+			}
+		} else {
+			return fmt.Errorf("transaction with timestamp %s not found", ts)
+		}
+
+		return nil
+	})
+
+	return err
+}
+
+func (b *BoltDB) FindParentIdByChildNickName(childNickName string) (parentId int64, err error) {
 	err = b.db.View(func(tx *bbolt.Tx) error {
 		bktName := "child_@" + childNickName
 		bkt := tx.Bucket([]byte(bktName))
 
-		_, v := bkt.Cursor().First()
+		k, _ := bkt.Cursor().First()
 
-		if v == nil {
+		if (k == nil) || (len(k) == 0) {
 			return fmt.Errorf("parent for a child [%s] not found", childNickName)
 		}
 
-		parentId = int64(binary.BigEndian.Uint64(v))
+		parentId = int64(binary.BigEndian.Uint64(k))
 
 		return nil
 	})
 
 	return parentId, err
+}
+
+func (b *BoltDB) FindChildren(parentId int64) (children []string, err error) {
+	err = b.db.View(func(tx *bbolt.Tx) error {
+		prtBktName := "parent_" + strconv.FormatInt(parentId, 10)
+		prtBkt := tx.Bucket([]byte(prtBktName))
+
+		prtBkt.ForEach(func(k, v []byte) error {
+			children = append(children, string(k))
+			return nil
+		})
+
+		return nil
+	})
+	return children, err
+}
+
+func (b *BoltDB) FindUserByNickname(nickname string) (User, error) {
+	var user User
+
+	err := b.db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket([]byte(usersBucketName))
+
+		c := b.Cursor()
+		for k, v := c.Last(); k != nil; k, v = c.Prev() {
+			var tmpUser User
+
+			if err := json.Unmarshal(v, &tmpUser); err != nil {
+				return fmt.Errorf("failed to unmarshal: %w", err)
+			}
+
+			if tmpUser.Nickname == nickname {
+				user = tmpUser
+				break
+			}
+		}
+
+		return nil
+	})
+
+	return user, err
+}
+
+// Close boltdb store
+func (b *BoltDB) Close() error {
+	return b.db.Close()
 }
